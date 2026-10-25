@@ -4,6 +4,8 @@
 
 #include <GLES3/gl3.h>
 #include <cmath>
+#include <chrono>
+#include <unistd.h>
 
 #include "imgui.h"
 #include "imgui_impl_opengl3.h"
@@ -61,6 +63,32 @@ void OnSurfaceChanged(int w, int h) {
 }
 
 void OnFrame() {
+    if (Tabs::s_fps_limit_idx > 0) {
+        int target_fps = 0;
+        switch (Tabs::s_fps_limit_idx) {
+            case 1: target_fps = 120; break;
+            case 2: target_fps = 90;  break;
+            case 3: target_fps = 60;  break;
+            case 4: target_fps = 30;  break;
+            case 5: target_fps = 15;  break;
+            case 6: target_fps = 5;   break;
+            default: target_fps = 0;  break;
+        }
+        
+        if (target_fps > 0) {
+            static auto last_time = std::chrono::high_resolution_clock::now();
+            auto current_time = std::chrono::high_resolution_clock::now();
+            std::chrono::duration<double> elapsed = current_time - last_time;
+            double target_dt = 1.0 / target_fps;
+            
+            if (elapsed.count() < target_dt) {
+                int sleep_us = (int)((target_dt - elapsed.count()) * 1000000);
+                if (sleep_us > 0) usleep(sleep_us);
+            }
+            last_time = std::chrono::high_resolution_clock::now();
+        }
+    }
+
     if (!g_ready) return;
 
     ImGuiIO& io = ImGui::GetIO();
@@ -115,7 +143,7 @@ void OnFrame() {
 
         ImGui::SetNextWindowPos(ImVec2(x, y),  ImGuiCond_FirstUseEver);
         ImGui::SetNextWindowSize(ImVec2(size, size), ImGuiCond_FirstUseEver);
-        ImGui::SetNextWindowSizeConstraints(ImVec2(short_side * 0.4f, short_side * 0.4f), ImVec2(g_w * 1.0f, g_h * 0.95f));
+     //   ImGui::SetNextWindowSizeConstraints(ImVec2(short_side * 0.4f, short_side * 0.4f), ImVec2(g_w * 1.0f, g_h * 0.95f));
 
         ImGuiWindowFlags menu_flags = 0;
         

@@ -39,31 +39,34 @@ extern bool g_hide_injection_features;
 
 namespace Tabs {
 
-static char s_scriptBuf[16384] = R"raw(console.log("Frida版本: " + Frida.version);
-console.log("V8就绪: " + (typeof Proxy !== 'undefined' ? "是" : "否")); 
-console.log("目标架构: " + Process.arch);
-console.log("支持Java Hook: " + (Java.available ? "是" : "否"));
-console.log("支持Native Hook: " + (Module.findExportByName("libc.so", "open") !== null ? "是" : "否"));
+// 标签页开关变量
+static bool s_show_tab_script = true;
+static bool s_show_tab_template = true;
+static bool s_show_tab_manage = true;
+static bool s_show_tab_settings = true; // 强制常驻
+static bool s_show_tab_log = true;
 
-console.log("");
+// 自动卸载配置
+static bool s_auto_stop_enable = false;
+static int s_auto_stop_interval = 5; // 默认5秒
+static double s_auto_stop_timer = 0.0;
+
+static char s_scriptBuf[16384] = R"raw(console.log("Frida版本: " + Frida.version);
+console.log("目标架构: " + Process.arch);
 
 if (Java.available) {
     Java.perform(function() {
         var app = Java.use('android.app.ActivityThread').currentApplication();
         var pkg = app ? app.getPackageName() : "未获取到";
-        var modules = Process.enumerateModules();
-        var soName = modules.length > 0 ? modules[0].name : "未获取到";
-        
         console.log("目标包名: " + pkg);
-        console.log("目标SO: " + soName);
-        console.log("安卓版本: Android " + Java.use("android.os.Build$VERSION").RELEASE.value);
-        console.log("设备型号: " + Java.use("android.os.Build").MODEL.value);
     });
 })raw";
 
 static std::deque<std::string> s_visibleLogs;
-static float s_uiScale = 1.0f;
-static bool  s_showFps = false; 
+float s_uiScale = 1.0f;
+bool  s_showFps = false; 
+int   s_fps_limit_idx = 0;
+static const char* s_fps_limits[] = { "无限制", "120 FPS", "90 FPS", "60 FPS", "30 FPS", "15 FPS", "5 FPS" };
 static int   s_themeIdx = 2;    
 static bool  s_touch_penetration = false;
 
@@ -218,9 +221,7 @@ static int InputTextCallback(ImGuiInputTextCallbackData* data) {
     return 0;
 }
 
-static void DrawLogArea() {
-    ImGui::Spacing(); ImGui::Separator(); ImGui::TextDisabled("运行日志");
-    
+static void DrawLogContent(bool fill_screen) {
     if (ImGui::Button("清空日志")) { ClearJsLogs(); s_visibleLogs.clear(); }
     ImGui::SameLine();
     if (ImGui::Button("导出至本地")) {
@@ -245,8 +246,8 @@ static void DrawLogArea() {
     auto newLogs = DrainJsLogs();
     for (auto& log : newLogs) { s_visibleLogs.push_back(log); if (s_visibleLogs.size() > 100) s_visibleLogs.pop_front(); }
     
-    // 自适应撑满剩余空间
-    ImGui::BeginChild("Logs", ImVec2(-1, ImGui::GetContentRegionAvail().y - 5.0f), true);
+    float height = fill_screen ? ImGui::GetContentRegionAvail().y : (ImGui::GetContentRegionAvail().y - 5.0f);
+    ImGui::BeginChild("Logs", ImVec2(-1, height), true);
     for (const auto& log : s_visibleLogs) {
         if (log.find("[error]") != std::string::npos || log.find("[ERROR]") != std::string::npos) {
             ImGui::TextColored(ImVec4(1.0f, 0.2f, 0.2f, 1.0f), "%s", log.c_str());
@@ -258,6 +259,11 @@ static void DrawLogArea() {
         ImGui::SetScrollHereY(1.0f);
     }
     ImGui::EndChild();
+}
+
+static void DrawLogArea() {
+    ImGui::Spacing(); ImGui::Separator(); ImGui::TextDisabled("运行日志");
+    DrawLogContent(false);
 }
 
 static void SaveTemplatesToFile() {
@@ -315,10 +321,14 @@ static void LoadTemplatesFromFile() {
 }
 
 static void PerformSilentSave() {
-    char configStr[1024] = {0};
+    char configStr[2048] = {0};
     snprintf(configStr, sizeof(configStr), 
-        "ui_scale=%.2f\ntheme=%d\nshow_fps=%d\nfab_x=%.1f\nfab_y=%.1f\npenetration=%d\nhide_injection=%d\n", 
-        s_uiScale, s_themeIdx, s_showFps ? 1 : 0, g_fab_x, g_fab_y, s_touch_penetration ? 1 : 0, g_hide_injection_features ? 1 : 0);
+        "ui_scale=%.2f\ntheme=%d\nshow_fps=%d\nfps_limit=%d\nfab_x=%.1f\nfab_y=%.1f\npenetration=%d\nhide_injection=%d\n"
+        "tab_script=%d\ntab_template=%d\ntab_manage=%d\ntab_settings=%d\ntab_log=%d\n"
+        "auto_stop=%d\nauto_stop_int=%d\n", 
+        s_uiScale, s_themeIdx, s_showFps ? 1 : 0, s_fps_limit_idx, g_fab_x, g_fab_y, s_touch_penetration ? 1 : 0, g_hide_injection_features ? 1 : 0,
+        s_show_tab_script ? 1 : 0, s_show_tab_template ? 1 : 0, s_show_tab_manage ? 1 : 0, s_show_tab_settings ? 1 : 0, s_show_tab_log ? 1 : 0,
+        s_auto_stop_enable ? 1 : 0, s_auto_stop_interval);
     SaveConfigToFile(configStr);
     SaveScriptToFile(s_scriptBuf);
     SaveTemplatesToFile();
@@ -337,7 +347,10 @@ static void DrawScriptTab() {
     if (ImGui::IsItemDeactivated()) { KeyboardBridge::Hide(); }
 
     ImGui::Spacing();
-    if (ImGui::Button("执行脚本", ImVec2(-1, 50))) { ExecuteJs(s_scriptBuf, "自定义脚本"); }
+    if (ImGui::Button("执行脚本", ImVec2(-1, 50))) { 
+        ExecuteJs(s_scriptBuf, "自定义脚本"); 
+        s_auto_stop_timer = ImGui::GetTime();
+    }
 
     ImGui::Spacing(); ImGui::Separator(); ImGui::TextDisabled("保存为模板");
     
@@ -382,6 +395,7 @@ static void DrawTemplateTab() {
             ImGui::PushID(s_custom_templates[i].first.c_str());
             if (ImGui::Button(s_custom_templates[i].first.c_str(), ImVec2(ImGui::GetContentRegionAvail().x - 45, 40))) {
                 ExecuteJs(s_custom_templates[i].second, "模板-" + s_custom_templates[i].first);
+                s_auto_stop_timer = ImGui::GetTime(); 
             }
             ImGui::SameLine();
             ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.6f, 0.1f, 0.1f, 0.8f));
@@ -412,6 +426,7 @@ static void DrawManageTab() {
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.8f, 0.2f, 0.2f, 0.9f));
     if (ImGui::Button("停止并清理所有脚本", ImVec2(-1, 45))) {
         StopAllScripts();
+        s_auto_stop_timer = ImGui::GetTime(); 
     }
     ImGui::PopStyleColor(2);
     
@@ -435,6 +450,13 @@ static void DrawManageTab() {
         }
         ImGui::EndChild();
     }
+}
+
+static void DrawLogTab() {
+    ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "日志输出");
+    ImGui::SameLine(); ImGui::TextDisabled("(共 %d 条)", GetJsLogCount());
+    ImGui::Separator();
+    DrawLogContent(true);
 }
 
 static void DrawSettingsTab() {
@@ -462,11 +484,48 @@ static void DrawSettingsTab() {
         ImGui::SetTooltip("开启后，点击悬浮球也会点到底下的游戏；\n关闭后，点击悬浮球完全不会影响游戏。");
     }
 
-    ImGui::Checkbox("显示 FPS", &s_showFps);
+    ImGui::Checkbox("调试 FPS", &s_showFps);
+    if (s_showFps) {
+        ImGui::SetNextItemWidth(-1);
+        ImGui::Combo("##fps_limit", &s_fps_limit_idx, s_fps_limits, IM_ARRAYSIZE(s_fps_limits));
+    }
     
     ImGui::Checkbox("防扫描模式[测试]", &g_hide_injection_features);
     if (ImGui::IsItemHovered()) {
         ImGui::SetTooltip("开启后启动，库，dex防扫描，需重启生效");
+    }
+
+    ImGui::Spacing(); ImGui::Separator(); ImGui::Spacing();
+
+    if (ImGui::CollapsingHeader("界面标签页显示设置", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::Checkbox("脚本页", &s_show_tab_script);
+        ImGui::SameLine();
+        ImGui::Checkbox("模板页", &s_show_tab_template);
+        ImGui::SameLine();
+        ImGui::Checkbox("管理页", &s_show_tab_manage);
+        
+        ImGui::Checkbox("日志页", &s_show_tab_log);
+        ImGui::SameLine();
+        
+        //  强制常驻设置页
+        bool true_val = true;
+        ImGui::BeginDisabled();
+        ImGui::Checkbox("设置页(常驻)", &true_val);
+        ImGui::EndDisabled();
+    }
+
+    ImGui::Spacing(); ImGui::Separator(); ImGui::Spacing();
+
+    if (ImGui::CollapsingHeader("自动化控制", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::Checkbox("定时卸载全部脚本", &s_auto_stop_enable);
+        if (s_auto_stop_enable) {
+            ImGui::SetNextItemWidth(-1);
+            ImGui::SliderInt("##auto_stop_int", &s_auto_stop_interval, 1, 60, "间隔 %d 秒");
+            
+            float remaining = s_auto_stop_interval - (float)(ImGui::GetTime() - s_auto_stop_timer);
+            if (remaining < 0) remaining = 0;
+            ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f), "距离下次卸载还有: %.1f 秒", remaining);
+        }
     }
 
     ImGui::Spacing(); ImGui::Separator(); ImGui::Spacing();
@@ -492,6 +551,7 @@ static void DrawSettingsTab() {
         s_uiScale = 1.0f;
         ImGui::GetIO().FontGlobalScale = 1.0f;
         s_showFps = false;
+        s_fps_limit_idx = 0;
         s_themeIdx = 2; 
         ApplyTheme(2);
         
@@ -500,30 +560,18 @@ static void DrawSettingsTab() {
         g_hide_injection_features = false;
         s_custom_templates.clear();
         
+        s_show_tab_script = true;
+        s_show_tab_template = true;
+        s_show_tab_manage = true;
+        s_show_tab_settings = true;
+        s_show_tab_log = true;
+        
+        s_auto_stop_enable = false;
+        s_auto_stop_interval = 5;
+
         g_fab_x = -1; 
         g_fab_y = -1;
-        // 重置为新的检测脚本
-        snprintf(s_scriptBuf, sizeof(s_scriptBuf), "%s", R"raw(console.log("Frida版本: " + Frida.version);
-console.log("V8就绪: " + (typeof Proxy !== 'undefined' ? "是" : "否")); 
-console.log("目标架构: " + Process.arch);
-console.log("支持Java Hook: " + (Java.available ? "是" : "否"));
-console.log("支持Native Hook: " + (Module.findExportByName("libc.so", "open") !== null ? "是" : "否"));
-
-console.log("");
-
-if (Java.available) {
-    Java.perform(function() {
-        var app = Java.use('android.app.ActivityThread').currentApplication();
-        var pkg = app ? app.getPackageName() : "未获取到";
-        var modules = Process.enumerateModules();
-        var soName = modules.length > 0 ? modules[0].name : "未获取到";
-        
-        console.log("目标包名: " + pkg);
-        console.log("目标SO: " + soName);
-        console.log("安卓版本: Android " + Java.use("android.os.Build$VERSION").RELEASE.value);
-        console.log("设备型号: " + Java.use("android.os.Build").MODEL.value);
-    });
-})raw");
+        snprintf(s_scriptBuf, sizeof(s_scriptBuf), "console.log('Hello Frida GumJS!');\n");
         
         ImGui::OpenPopup("删除成功");
     }
@@ -582,6 +630,7 @@ void DrawAll() {
                         }
                         else if (strcmp(key, "theme") == 0) { s_themeIdx = atoi(val); }
                         else if (strcmp(key, "show_fps") == 0) { s_showFps = (atoi(val) != 0); }
+                        else if (strcmp(key, "fps_limit") == 0) { s_fps_limit_idx = atoi(val); }
                         else if (strcmp(key, "fab_x") == 0) { g_fab_x = atof(val); }
                         else if (strcmp(key, "fab_y") == 0) { g_fab_y = atof(val); }
                         else if (strcmp(key, "penetration") == 0) { 
@@ -589,6 +638,13 @@ void DrawAll() {
                             g_touch_penetration = s_touch_penetration;
                         }
                         else if (strcmp(key, "hide_injection") == 0) { g_hide_injection_features = (atoi(val) != 0); }
+                        else if (strcmp(key, "tab_script") == 0) { s_show_tab_script = (atoi(val) != 0); }
+                        else if (strcmp(key, "tab_template") == 0) { s_show_tab_template = (atoi(val) != 0); }
+                        else if (strcmp(key, "tab_manage") == 0) { s_show_tab_manage = (atoi(val) != 0); }
+                        else if (strcmp(key, "tab_settings") == 0) { s_show_tab_settings = (atoi(val) != 0); }
+                        else if (strcmp(key, "tab_log") == 0) { s_show_tab_log = (atoi(val) != 0); }
+                        else if (strcmp(key, "auto_stop") == 0) { s_auto_stop_enable = (atoi(val) != 0); }
+                        else if (strcmp(key, "auto_stop_int") == 0) { s_auto_stop_interval = atoi(val); }
                     }
                 }
                 ptr += lineLen; if (*ptr == '\n') ptr++;
@@ -599,8 +655,19 @@ void DrawAll() {
         if (!scriptStr.empty()) { snprintf(s_scriptBuf, sizeof(s_scriptBuf), "%s", scriptStr.c_str()); }
         
         LoadTemplatesFromFile();
-        
+        s_auto_stop_timer = ImGui::GetTime();
         s_configLoaded = true;
+
+        // 强制常驻
+        s_show_tab_settings = true;
+    }
+
+    //  自动卸载检测逻辑
+    if (s_auto_stop_enable) {
+        if (ImGui::GetTime() - s_auto_stop_timer >= s_auto_stop_interval) {
+            StopAllScripts();
+            s_auto_stop_timer = ImGui::GetTime(); 
+        }
     }
 
     static double last_save_time = ImGui::GetTime();
@@ -610,10 +677,11 @@ void DrawAll() {
     }
 
     if (ImGui::BeginTabBar("MainTabs")) {
-        if (ImGui::BeginTabItem("脚本")) { DrawScriptTab();   ImGui::EndTabItem(); }
-        if (ImGui::BeginTabItem("模板")) { DrawTemplateTab(); ImGui::EndTabItem(); }
-        if (ImGui::BeginTabItem("管理")) { DrawManageTab();   ImGui::EndTabItem(); }
-        if (ImGui::BeginTabItem("设置")) { DrawSettingsTab(); ImGui::EndTabItem(); }
+        if (s_show_tab_script && ImGui::BeginTabItem("脚本")) { DrawScriptTab();   ImGui::EndTabItem(); }
+        if (s_show_tab_template && ImGui::BeginTabItem("模板")) { DrawTemplateTab(); ImGui::EndTabItem(); }
+        if (s_show_tab_manage && ImGui::BeginTabItem("管理")) { DrawManageTab();   ImGui::EndTabItem(); }
+        if (s_show_tab_log && ImGui::BeginTabItem("日志")) { DrawLogTab(); ImGui::EndTabItem(); }
+        if (s_show_tab_settings && ImGui::BeginTabItem("设置")) { DrawSettingsTab(); ImGui::EndTabItem(); }
         ImGui::EndTabBar();
     }
 }
