@@ -328,7 +328,7 @@ void StopAllScripts() {
         g_source_attach(src, g_js_context);
         g_source_unref(src);
     }
-    PushJsLog("[info] 已停止并清理所有脚本");
+   // PushJsLog("[info] 已停止并清理所有脚本");
 }
 
 void HideFridaThreadsLoop() {
