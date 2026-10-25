@@ -15,28 +15,6 @@ Frida_IMGUI 是一个完全运行于 Android 终端内的图形化动态逆向�
 - **图形化交互与多脚本管理**：内置防穿透与拖拽机制的悬浮窗，支持小悬浮窗使大悬浮窗自由开关，支持多脚本并发运行与一键卸载，并提供了可持久化保存的脚本模板库。
 - **脚本配置保存机制**：提供了保存配置按钮，并且自动静默保存，下次注入同一目标时自动应用
 
-Frida_IMGUI/
-├── assets/                 # 资源与壳代码
-│   ├── MyRenderer.java     # 挂载视图的 Java 源码 (修改后需重新生成 dex)
-│   ├── classes.dex         # 编译后的极小体积壳 Dex
-│   ├── dex_data.S          # 汇编定义，将 classes.dex 打包进 SO 文件
-│   └── README.md           # 关于如何重新编译 Dex 的说明
-├── Frida/                  
-│   └── arm64-v8a/          # ⚠️ 需自行下载依赖并放置于此（详见该目录下 README）
-├── ImGui/                  # Dear ImGui 官方源码
-├── UI/                     # 界面与交互逻辑
-│   ├── InputHandler.cpp/h  # 触摸事件拦截与分发
-│   ├── KeyboardBridge.cpp/h# Java 软键盘与 C++ 的桥接
-│   ├── Tabs.cpp/h          # 选项卡 UI 逻辑与脚本管理
-│   └── UIManager.cpp/h     # 渲染主循环与悬浮球控制
-├── CMakeLists.txt          # CMake 构建脚本
-├── main.cpp                # 注入入口、JNI 初始化、引擎线程管理
-├── script.cpp / script.h   # 内置的防检测 JS 脚本逻辑
-└── README.md               # 项目主说明文档
-
-
-
-
 ## 3. 使用说明
 
 本项目提供两种部署与使用方案：静态打包（免 Root） 与 Root 注入。
