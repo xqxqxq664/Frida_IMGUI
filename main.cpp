@@ -210,7 +210,7 @@ static void PushJsLog(const std::string& line) {
     std::lock_guard<std::mutex> lock(g_js_logMtx);
     g_js_logQueue.push_back(line);
     g_js_totalLogCount++;
-    if (g_js_logQueue.size() > 200) g_js_logQueue.pop_front();
+    if (g_js_logQueue.size() > 2000) g_js_logQueue.pop_front();
 }
 
 // 解析 Frida 引擎发送的 JSON 消息体，捕获输出及致命崩溃

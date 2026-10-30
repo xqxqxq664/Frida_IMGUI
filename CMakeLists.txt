@@ -17,10 +17,15 @@ set_target_properties(frida-gumjs PROPERTIES
 set(SOURCES
     main.cpp
     script.cpp
+    presets.cpp
     assets/dex_data.S
     UI/UIManager.cpp
     UI/InputHandler.cpp
     UI/Tabs.cpp
+    UI/Tab_Log.cpp
+    UI/Tab_Script.cpp
+    UI/Tab_Preset.cpp
+    UI/Tab_Settings.cpp
     UI/KeyboardBridge.cpp
     ImGui/imgui.cpp
     ImGui/imgui_draw.cpp

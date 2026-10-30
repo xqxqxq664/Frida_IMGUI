@@ -12,7 +12,6 @@ const char* INJECTION_HIDE_JS = R"raw(
                 spoofedMapsPath = cacheDir + "/.cache_maps_view";
                 spoofedSmapsPath = cacheDir + "/.cache_smaps_view";
 
-                // 缓存 Maps 数据
                 var realMaps = File.readAllText("/proc/self/maps");
                 var lines = realMaps.split("\n");
                 var sanitizedLines = [];
@@ -38,7 +37,6 @@ const char* INJECTION_HIDE_JS = R"raw(
                 }
                 File.writeAllText(spoofedMapsPath, sanitizedLines.join("\n"));
 
-                // 缓存 Smaps 数据
                 try {
                     var realSmaps = File.readAllText("/proc/self/smaps");
                     realSmaps = realSmaps.replace(/Private_Dirty:\s+\d+\s+kB/g, "Private_Dirty:        0 kB");
@@ -53,7 +51,6 @@ const char* INJECTION_HIDE_JS = R"raw(
         });
     }
 
-    // 重定向底层文件读取操作
     function hookFileOpen() {
         var openPtr = Module.findExportByName(null, "open");
         var openatPtr = Module.findExportByName(null, "openat");
@@ -85,7 +82,6 @@ const char* INJECTION_HIDE_JS = R"raw(
         attachOpenHook(fopenPtr, 0);
     }
 
-    // 处理文件描述符路径查询
     function hookReadlink() {
         var readlinkPtr = Module.findExportByName(null, "readlink");
         var readlinkatPtr = Module.findExportByName(null, "readlinkat");
