@@ -1,8 +1,10 @@
+[English](README_EN.md) | Simplified Chinese
+
 # Frida_IMGUI
 
 ## 1. Project Introduction
 
-Frida_IMGUI is a Frida console running entirely on the Android side, based on ImGui to support visual dynamic script management, rendering ImGui internally within the software, without the need for a PC.
+Frida_IMGUI is a Frida console running entirely on the Android side. Based on ImGui, it supports visual dynamic script management by rendering ImGui internally within the software, without the need for a PC.
 
 Its main purpose is to solve the problems of traditional Frida having to rely on PC data cables and a resident `frida-server`, as well as the lack of a good-looking UI, providing an integrated environment for dynamic debugging, code injection, and memory analysis directly on mobile devices without connecting to a computer.
 
@@ -15,12 +17,15 @@ Its main purpose is to solve the problems of traditional Frida having to rely on
 ## 2. Project Advantages
 
 - **Easy to Use**: Gets rid of independent processes and default ports, no PC needed. Through repackaging (No Root required) or dynamic injection.
+- **Enhanced Concealment**:
+  - 1. Built-in Frida feature thread changing: Automatically traverses and renames threads like `gum-js-loop` during initialization.
+  - 2. memfd remapping to hide library files: Automatically starts during initialization to hide injected library files.
+  - 3. DEX loading logic concealment optimization: Automatically starts during initialization to prevent detection related to DEX loading.
 - **Graphical Interaction and Multi-Script Management**: Built-in floating window with anti-penetration and drag mechanisms, supports a small floating window to freely toggle the large floating window, supports concurrent running of multiple scripts and one-click uninstallation, and provides a persistent script template library.
 - **Full-Stack Hook Capabilities**: Bottom layer adapted to Frida 16.7.14. Can perform Hook on the Java layer of ordinary Android applications (`Java.perform`), and interception and active calls on Native layer `.so` libraries (`Interceptor`).
 - **Script Configuration Saving Mechanism**: Provides a save configuration button, and automatically silently saves, automatically applied next time the same target is injected.
-- **Thread Name Changing Mechanism**:
-  - Built-in thread changing: Automatically traverses and renames threads like `gum-js-loop` during initialization, renamed to custom names for easy log differentiation and troubleshooting.
 - **Preset Script Library**: Provides some preset Frida js scripts (active call native functions, il2cpp dump), and supports UI.
+
 
 ## 3. Usage Instructions
 
