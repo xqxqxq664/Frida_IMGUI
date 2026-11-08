@@ -6,7 +6,6 @@
 #include <cstdlib>
 
 extern bool g_touch_penetration;
-extern bool g_hide_injection_features;
 extern float g_fab_x;
 extern float g_fab_y;
 extern const char* GetLogFilePath();
@@ -182,9 +181,28 @@ namespace Tabs {
             ImGui::Combo("##fps_limit", &s_fps_limit_idx, s_fps_limits, IM_ARRAYSIZE(s_fps_limits));
         }
         
-        ImGui::Checkbox("防扫描模式[测试]", &g_hide_injection_features);
-        if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("开启后启动，库，dex防扫描，需重启生效");
+        ImGui::Spacing(); ImGui::Separator(); ImGui::Spacing();
+
+        if (ImGui::CollapsingHeader("隐藏性增强", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::Checkbox("抹除 ELF 头特征", &g_hide_elf_header);
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("物理隐藏动态库特征，防内存扫描，需重启生效");
+            }
+
+            ImGui::Checkbox("memfd重映射隐藏库文件", &g_hide_so_info);
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("重映射内存页为 memfd，此功能默认开启，隐藏库文件，需重启生效");
+            }
+        }
+
+        ImGui::Spacing(); ImGui::Separator(); ImGui::Spacing();
+
+        if (ImGui::CollapsingHeader("默认设置配置", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::Text("默认 So 名称");
+            ImGui::SetNextItemWidth(-1);
+            ImGui::InputText("##so_name", s_default_so_name, sizeof(s_default_so_name), ImGuiInputTextFlags_CallbackAlways, InputTextCallback, s_default_so_name);
+            if (ImGui::IsItemActivated()) { KeyboardBridge::SetActiveBuffer(s_default_so_name, sizeof(s_default_so_name)); KeyboardBridge::Show(); }
+            if (ImGui::IsItemDeactivated()) { KeyboardBridge::Hide(); }
         }
 
         ImGui::Spacing(); ImGui::Separator(); ImGui::Spacing();
@@ -205,14 +223,6 @@ namespace Tabs {
             ImGui::Checkbox("设置页(常驻)", &true_val);
             ImGui::EndDisabled();
         }
-
-        ImGui::Spacing(); ImGui::Separator(); ImGui::Spacing();
-
-        ImGui::Text("默认 So 名称");
-        ImGui::SetNextItemWidth(-1);
-        ImGui::InputText("##so_name", s_default_so_name, sizeof(s_default_so_name), ImGuiInputTextFlags_CallbackAlways, InputTextCallback, s_default_so_name);
-        if (ImGui::IsItemActivated()) { KeyboardBridge::SetActiveBuffer(s_default_so_name, sizeof(s_default_so_name)); KeyboardBridge::Show(); }
-        if (ImGui::IsItemDeactivated()) { KeyboardBridge::Hide(); }
 
         ImGui::Spacing(); ImGui::Separator(); ImGui::Spacing();
 
@@ -257,7 +267,8 @@ namespace Tabs {
             
             s_touch_penetration = false;
             g_touch_penetration = false;
-            g_hide_injection_features = false;
+            g_hide_elf_header = false;
+            g_hide_so_info = true;
             s_custom_templates.clear();
             
             s_show_tab_script = true;
@@ -305,6 +316,8 @@ namespace Tabs {
 
         ImGui::Spacing(); ImGui::Separator(); ImGui::Spacing();
         ImGui::TextDisabled("--- 鸣谢 (Open Source Projects) ---");
+        ImGui::BulletText("本项目");
+        ImGui::TextColored(ImVec4(0.4f, 0.6f, 1.0f, 1.0f), "  https://github.com/xqxqxq664/Frida_IMGUI");
         ImGui::BulletText("Dear ImGui - 强大的 C++ 即时渲染 UI 库");
         ImGui::TextColored(ImVec4(0.4f, 0.6f, 1.0f, 1.0f), "  https://github.com/ocornut/imgui");
         ImGui::BulletText("Frida - 动态插桩工具包 (GumJS 引擎)");

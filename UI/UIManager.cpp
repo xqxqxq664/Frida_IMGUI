@@ -143,7 +143,6 @@ void OnFrame() {
 
         ImGui::SetNextWindowPos(ImVec2(x, y),  ImGuiCond_FirstUseEver);
         ImGui::SetNextWindowSize(ImVec2(size, size), ImGuiCond_FirstUseEver);
-     //   ImGui::SetNextWindowSizeConstraints(ImVec2(short_side * 0.4f, short_side * 0.4f), ImVec2(g_w * 1.0f, g_h * 0.95f));
 
         ImGuiWindowFlags menu_flags = 0;
         
@@ -163,9 +162,12 @@ void OnFrame() {
 
         ImDrawList* drawList = ImGui::GetForegroundDrawList();
         
+        ImU32 fabBgColor = ImGui::GetColorU32(ImGuiCol_Button);
+        ImU32 fabBorderColor = ImGui::GetColorU32(ImGuiCol_CheckMark);
+
         drawList->AddCircleFilled(ImVec2(center.x + 3, center.y + 3), radius, IM_COL32(0, 0, 0, 100), 32);
-        drawList->AddCircleFilled(center, radius, IM_COL32(30, 60, 120, 255), 32);
-        drawList->AddCircle(center, radius, IM_COL32(100, 150, 255, 200), 32, 2.5f);
+        drawList->AddCircleFilled(center, radius, fabBgColor, 32);
+        drawList->AddCircle(center, radius, fabBorderColor, 32, 2.5f);
         
         ImU32 textColor = IM_COL32(255, 255, 255, 255);
         float thick = radius * 0.12f;

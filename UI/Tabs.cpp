@@ -24,7 +24,6 @@ extern void StopAllScripts();
 extern float g_fab_x;
 extern float g_fab_y;
 extern bool g_touch_penetration;
-extern bool g_hide_injection_features;
 
 namespace Tabs {
 
@@ -72,6 +71,9 @@ bool  s_showFps = false;
 int   s_fps_limit_idx = 0;
 int   s_themeIdx = 2;    
 bool  s_touch_penetration = false;
+
+bool g_hide_elf_header = false;
+bool g_hide_so_info = true; 
 
 std::vector<std::pair<std::string, std::string>> s_custom_templates;
 char  s_new_template_name[64] = ""; 
@@ -144,12 +146,12 @@ void LoadTemplatesFromFile() {
 void PerformSilentSave() {
     char configStr[8192] = {0};
     int len = snprintf(configStr, sizeof(configStr), 
-        "ui_scale=%.2f\ntheme=%d\nshow_fps=%d\nfps_limit=%d\nfab_x=%.1f\nfab_y=%.1f\npenetration=%d\nhide_injection=%d\n"
+        "ui_scale=%.2f\ntheme=%d\nshow_fps=%d\nfps_limit=%d\nfab_x=%.1f\nfab_y=%.1f\npenetration=%d\n"
         "tab_script=%d\ntab_template=%d\ntab_manage=%d\ntab_settings=%d\ntab_log=%d\ntab_presets=%d\n"
-        "auto_stop=%d\nauto_stop_int=%d\nso_name=%s\ndump_mode=%d\n", 
-        s_uiScale, s_themeIdx, s_showFps ? 1 : 0, s_fps_limit_idx, g_fab_x, g_fab_y, s_touch_penetration ? 1 : 0, g_hide_injection_features ? 1 : 0,
+        "auto_stop=%d\nauto_stop_int=%d\nso_name=%s\ndump_mode=%d\nhide_elf=%d\nhide_soinfo=%d\n", 
+        s_uiScale, s_themeIdx, s_showFps ? 1 : 0, s_fps_limit_idx, g_fab_x, g_fab_y, s_touch_penetration ? 1 : 0,
         s_show_tab_script ? 1 : 0, s_show_tab_template ? 1 : 0, s_show_tab_manage ? 1 : 0, s_show_tab_settings ? 1 : 0, s_show_tab_log ? 1 : 0, s_show_tab_presets ? 1 : 0,
-        s_auto_stop_enable ? 1 : 0, s_auto_stop_interval, s_default_so_name, s_dump_mode_idx);
+        s_auto_stop_enable ? 1 : 0, s_auto_stop_interval, s_default_so_name, s_dump_mode_idx, g_hide_elf_header ? 1 : 0, g_hide_so_info ? 1 : 0);
 
     len += snprintf(configStr + len, sizeof(configStr) - len, 
         "nc_offset=%s\nnc_hook_offset=%s\nnc_arg_count=%d\nnc_call_count=%s\nnc_interval=%s\n",
@@ -192,7 +194,8 @@ void DrawAll() {
                         else if (strcmp(key, "fab_x") == 0) { g_fab_x = atof(val); }
                         else if (strcmp(key, "fab_y") == 0) { g_fab_y = atof(val); }
                         else if (strcmp(key, "penetration") == 0) { s_touch_penetration = (atoi(val) != 0); g_touch_penetration = s_touch_penetration; }
-                        else if (strcmp(key, "hide_injection") == 0) { g_hide_injection_features = (atoi(val) != 0); }
+                        else if (strcmp(key, "hide_elf") == 0) { g_hide_elf_header = (atoi(val) != 0); }
+                        else if (strcmp(key, "hide_soinfo") == 0) { g_hide_so_info = (atoi(val) != 0); }
                         else if (strcmp(key, "tab_script") == 0) { s_show_tab_script = (atoi(val) != 0); }
                         else if (strcmp(key, "tab_template") == 0) { s_show_tab_template = (atoi(val) != 0); }
                         else if (strcmp(key, "tab_manage") == 0) { s_show_tab_manage = (atoi(val) != 0); }

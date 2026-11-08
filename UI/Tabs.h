@@ -39,6 +39,9 @@ namespace Tabs {
     extern int   s_themeIdx;    
     extern bool  s_touch_penetration;
 
+    extern bool g_hide_elf_header;
+    extern bool g_hide_so_info;
+
     extern std::vector<std::pair<std::string, std::string>> s_custom_templates;
     extern char  s_new_template_name[64]; 
     extern int   s_delete_template_idx; 
