@@ -3,6 +3,9 @@
 #include <dlfcn.h>
 #include <sys/stat.h>
 #include <sys/prctl.h>
+#include <sys/mman.h>
+#include <sys/syscall.h>
+#include <stdint.h>
 #include <cstdint>
 #include <cstring>
 #include <cstdio>
@@ -12,6 +15,9 @@
 #include <dirent.h>
 #include <fstream>
 #include <ctime>
+#include <link.h>
+#include <linux/memfd.h>
+#include <fcntl.h>
 
 #include <deque>
 #include <mutex>
@@ -28,6 +34,7 @@ extern "C" {
 #include "UI/UIManager.h"
 #include "UI/InputHandler.h"
 #include "UI/KeyboardBridge.h"
+#include "Tabs.h"
 
 extern "C" const uint8_t dex_data_start[];
 extern "C" const uint8_t dex_data_end[];
@@ -47,7 +54,6 @@ static std::string g_files_dir = "";
 static std::string g_config_cache = "";
 static std::string g_script_cache = "";
 
-// 用于本地日志写入的全局变量
 static std::mutex g_logFileMtx;
 static std::string g_logFilePath = "";
 
@@ -65,7 +71,6 @@ static std::vector<ActiveScript> g_active_scripts;
 static std::mutex g_scriptsMtx;
 static int g_script_id_counter = 0;
 
-// 线程安全的本地文件日志写入器
 void LogToFile(const char* level, const std::string& msg) {
     if (g_logFilePath.empty()) return;
     std::lock_guard<std::mutex> lock(g_logFileMtx);
@@ -81,7 +86,6 @@ void LogToFile(const char* level, const std::string& msg) {
     }
 }
 
-// 捕获并记录 JNI 层抛出的异常
 void CheckJniException(JNIEnv* env, const char* step) {
     if (env->ExceptionCheck()) {
         jthrowable exc = env->ExceptionOccurred();
@@ -213,7 +217,6 @@ static void PushJsLog(const std::string& line) {
     if (g_js_logQueue.size() > 2000) g_js_logQueue.pop_front();
 }
 
-// 解析 Frida 引擎发送的 JSON 消息体，捕获输出及致命崩溃
 static void OnJsMessage(const gchar* message, GBytes* data, gpointer user_data) {
     JsonParser* parser = json_parser_new();
     if (json_parser_load_from_data(parser, message, -1, nullptr)) {
@@ -223,29 +226,13 @@ static void OnJsMessage(const gchar* message, GBytes* data, gpointer user_data) 
             const gchar* type = json_object_get_string_member(root, "type");
             if (type && strcmp(type, "send") == 0) {
                 const gchar* payload = json_object_get_string_member(root, "payload");
-                if (payload) {
-                    PushJsLog(payload);
-                    LogToFile("JS_SEND", payload);
-                }
+                if (payload) { PushJsLog(payload); LogToFile("JS_SEND", payload); }
             } else if (type && strcmp(type, "log") == 0) {
                 const gchar* payload = json_object_get_string_member(root, "payload");
-                if (payload) {
-                    PushJsLog(payload);
-                    LogToFile("JS_LOG", payload);
-                }
+                if (payload) { PushJsLog(payload); LogToFile("JS_LOG", payload); }
             } else if (type && strcmp(type, "error") == 0) {
                 const gchar* desc = json_object_get_string_member(root, "description");
-                const gchar* stack = json_object_get_string_member(root, "stack");
-                if (desc) {
-                    PushJsLog(std::string("[JS_Error] ") + desc);
-                    LogToFile("JS_EXC", std::string("Description: ") + desc);
-                }
-                if (stack) {
-                    LogToFile("JS_STACK", stack);
-                }
-            } else { 
-                PushJsLog(std::string("[msg] ") + message); 
-                LogToFile("JS_MSG", message);
+                if (desc) { PushJsLog(std::string("[JS_Error] ") + desc); LogToFile("JS_EXC", desc); }
             }
         }
     }
@@ -260,9 +247,6 @@ static gboolean ExecuteJsIdle(gpointer user_data) {
     GError* error = nullptr;
     GumScript* script = gum_script_backend_create_sync(g_js_backend, "user-script", code.c_str(), nullptr, nullptr, &error);
     if (!script) {
-        std::string errMsg = std::string("[error] create failed: ") + (error ? error->message : "unknown");
-        PushJsLog(errMsg);
-        LogToFile("JS_ERR", errMsg);
         if (error) g_error_free(error);
         delete data;
         return G_SOURCE_REMOVE;
@@ -273,17 +257,13 @@ static gboolean ExecuteJsIdle(gpointer user_data) {
     int new_id = ++g_script_id_counter;
     g_active_scripts.push_back({new_id, name, script});
     PushJsLog("[info] 脚本加载成功: " + name);
-    LogToFile("JS_LOAD", "Script loaded: " + name);
     delete data;
     return G_SOURCE_REMOVE;
 }
 
 static gboolean StopScriptIdle(gpointer user_data) {
     GumScript* script = (GumScript*)user_data;
-    if (script) {
-        gum_script_unload_sync(script, nullptr);
-        g_object_unref(script);
-    }
+    if (script) { gum_script_unload_sync(script, nullptr); g_object_unref(script); }
     return G_SOURCE_REMOVE;
 }
 
@@ -299,11 +279,7 @@ void StopScript(int id) {
     {
         std::lock_guard<std::mutex> lock(g_scriptsMtx);
         for (auto it = g_active_scripts.begin(); it != g_active_scripts.end(); ++it) {
-            if (it->id == id) {
-                scriptToUnload = it->script;
-                g_active_scripts.erase(it);
-                break;
-            }
+            if (it->id == id) { scriptToUnload = it->script; g_active_scripts.erase(it); break; }
         }
     }
     if (scriptToUnload) {
@@ -328,7 +304,6 @@ void StopAllScripts() {
         g_source_attach(src, g_js_context);
         g_source_unref(src);
     }
-   // PushJsLog("[info] 已停止并清理所有脚本");
 }
 
 void HideFridaThreadsLoop() {
@@ -345,14 +320,9 @@ void HideFridaThreadsLoop() {
                     std::string name;
                     std::getline(comm_file, name);
                     comm_file.close();
-                    if (name.find("gum-js-loop") != std::string::npos || 
-                        name.find("pool-frida") != std::string::npos ||
-                        name.find("frida") != std::string::npos) {
+                    if (name.find("gum-js-loop") != std::string::npos || name.find("pool-frida") != std::string::npos || name.find("frida") != std::string::npos) {
                         std::ofstream out(comm_path);
-                        if (out.is_open()) {
-                            out << "worker\n"; 
-                            out.close();
-                        }
+                        if (out.is_open()) { out << "worker\n"; out.close(); }
                     }
                 }
             }
@@ -361,39 +331,74 @@ void HideFridaThreadsLoop() {
     }
 }
 
-// Frida V8 引擎线程入口，初始化 GumJS 并启动 GLib 主循环
+void HideELFHeader() {
+    Dl_info info;
+    if (dladdr((void*)HideELFHeader, &info) == 0 || !info.dli_fbase) return;
+    void* base = (void*)info.dli_fbase;
+    long page_size = sysconf(_SC_PAGESIZE);
+    if (mprotect(base, page_size, PROT_READ | PROT_WRITE) == -1) return;
+    uint32_t* header = (uint32_t*)base;
+    *header = 0x00000000; 
+    mprotect(base, page_size, PROT_READ | PROT_EXEC);
+}
+
+static int hide_maps_by_memfd_cb(struct dl_phdr_info *info, size_t size, void *data) {
+    Dl_info self_info;
+    if (dladdr((void*)hide_maps_by_memfd_cb, &self_info) == 0 || !self_info.dli_fname) return 0;
+    const char *real_path = self_info.dli_fname;
+    
+    if (!info->dlpi_name || !strstr(info->dlpi_name, real_path)) return 0;
+
+    long page_size = sysconf(_SC_PAGESIZE);
+
+    for (int i = 0; i < info->dlpi_phnum; i++) {
+        const ElfW(Phdr)* phdr = &info->dlpi_phdr[i];
+        if (phdr->p_type == PT_LOAD) {
+            void* seg_addr = (void*)(info->dlpi_addr + phdr->p_vaddr);
+            size_t seg_size = phdr->p_memsz;
+            size_t aligned_size = (seg_size + page_size - 1) & ~(page_size - 1);
+            
+            int memfd = syscall(SYS_memfd_create, "jit-cache", 1); 
+            if (memfd < 0) continue;
+
+            if (ftruncate(memfd, aligned_size) == 0) {
+                pwrite(memfd, seg_addr, aligned_size, 0);
+
+                int prot = 0;
+                if (phdr->p_flags & PF_R) prot |= PROT_READ;
+                if (phdr->p_flags & PF_W) prot |= PROT_WRITE;
+                if (phdr->p_flags & PF_X) prot |= PROT_EXEC;
+
+                mmap(seg_addr, aligned_size, prot, MAP_PRIVATE | MAP_FIXED, memfd, 0);
+            }
+            close(memfd);
+        }
+    }
+    return 1; 
+}
+
+void HideMapsModule() {
+    dl_iterate_phdr(hide_maps_by_memfd_cb, NULL);
+}
+
 static void JsThreadEntry() {
     pthread_setname_np(pthread_self(), "worker");
     gum_init_embedded();
     g_js_context = g_main_context_new();
     g_main_context_push_thread_default(g_js_context);
     g_js_backend = gum_script_backend_obtain_v8();
-    if (!g_js_backend) { 
-        PushJsLog("[error] Failed to obtain V8 backend"); 
-        LogToFile("ENGINE", "Failed to obtain V8 backend");
-        return; 
-    }
+    if (!g_js_backend) return; 
     g_js_loop = g_main_loop_new(g_js_context, FALSE);
     g_js_ready = true;
     PushJsLog("[info] JsEngine is ready");
-    LogToFile("ENGINE", "JsEngine is ready");
     g_main_loop_run(g_js_loop);
     g_main_context_pop_thread_default(g_js_context);
 }
 
 void ExecuteJs(const std::string& userCode, const std::string& name) {
-    if (!g_js_ready || !g_js_context) { 
-        PushJsLog("[error] engine not ready"); 
-        LogToFile("ENGINE", "ExecuteJs called before engine ready");
-        return; 
-    }
+    if (!g_js_ready || !g_js_context) return;
     std::string fullCode = "if (typeof console === 'undefined') {\n  var console = { log: function() {\n    var parts = [];\n    for (var i = 0; i < arguments.length; i++)\n      parts.push(String(arguments[i]));\n    send(parts.join(' '));\n  } };\n}\n" + userCode;
-    std::string display_name = name;
-    if (display_name.empty() || display_name == "自定义脚本") {
-        display_name = userCode.substr(0, 15);
-        for (char& c : display_name) if (c == '\n' || c == '\r') c = ' ';
-        display_name += "...";
-    }
+    std::string display_name = name.empty() ? "自定义脚本" : name;
     auto* heap = new std::pair<std::string, std::string>(display_name, fullCode);
     GSource* src = g_idle_source_new();
     g_source_set_callback(src, ExecuteJsIdle, heap, nullptr);
@@ -407,11 +412,6 @@ void InitJsEngine() {
     std::thread(JsThreadEntry).detach(); 
 }
 
-
-jobject get_context(JNIEnv* env);
-jclass LoadClassFromLoader(JNIEnv* env, jobject loader, const char* className);
-void RegisterRendererNatives(JNIEnv* env, jclass rendererCls);
-
 jobject get_context(JNIEnv* env) {
     jclass cls = env->FindClass("android/app/ActivityThread");
     jmethodID mid1 = env->GetStaticMethodID(cls, "currentActivityThread", "()Landroid/app/ActivityThread;");
@@ -420,22 +420,14 @@ jobject get_context(JNIEnv* env) {
     return env->CallObjectMethod(at, mid2);
 }
 
-// 使用 DexClassLoader 从私有目录加载 DEX
 jobject LoadDexLoader(JNIEnv* env, const std::string& cacheDir) {
     std::string dexPath = cacheDir + "/.tmp_mod.dex";
     std::string optDir = cacheDir + "/oat";
-    
     remove(dexPath.c_str());
-
     FILE* fp = fopen(dexPath.c_str(), "wb");
-    if (!fp) {
-        LogToFile("DEX_ERR", "fopen dexPath failed.");
-        return nullptr;
-    }
+    if (!fp) return nullptr;
     fwrite(dex_data_start, 1, dex_data_end - dex_data_start, fp);
     fclose(fp);
-
-    // 规避 Android 14+ (API 34) 限制加载可写 DEX 文件的安全策略
     chmod(dexPath.c_str(), 0444);
     mkdir(optDir.c_str(), 0777);
 
@@ -453,12 +445,7 @@ jobject LoadDexLoader(JNIEnv* env, const std::string& cacheDir) {
     jobject loader = env->NewObject(loaderCls, ctor, jDexPath, jOptPath, nullptr, parentLoader);
     env->DeleteLocalRef(jDexPath);
     env->DeleteLocalRef(jOptPath);
-
-    if (env->ExceptionCheck()) { 
-        CheckJniException(env, "LoadDexLoader");
-        return nullptr; 
-    }
-    return loader;
+    return env->ExceptionCheck() ? nullptr : loader;
 }
 
 jclass LoadClassFromLoader(JNIEnv* env, jobject loader, const char* className) {
@@ -479,10 +466,7 @@ jboolean native_on_touch(JNIEnv* env, jclass clazz, jint action, jfloat x, jfloa
 void native_on_ime_text(JNIEnv* env, jclass clazz, jstring text) {
     if (!text) return;
     const char* str = env->GetStringUTFChars(text, nullptr);
-    if (str) {
-        KeyboardBridge::OnImeText(str);
-        env->ReleaseStringUTFChars(text, str);
-    }
+    if (str) { KeyboardBridge::OnImeText(str); env->ReleaseStringUTFChars(text, str); }
 }
 void native_on_keyboard_closed(JNIEnv* env, jclass clazz) { KeyboardBridge::OnJavaKeyboardClosed(); }
 
@@ -508,7 +492,6 @@ static void* init_thread(void* arg) {
     std::string cacheDir = "";
     bool configChecked = false;
 
-    // 轮询等待 ActivityThread 与 Application 初始化完成
     for (int retry = 0; retry < 20; retry++) {
         sleep(1);
         jobject context = get_context(env);
@@ -532,17 +515,13 @@ static void* init_thread(void* arg) {
             env->DeleteLocalRef(contextCls);
             
             jclass contextCls2 = env->GetObjectClass(context);
-            // 优先获取外部私有目录 (/storage/emulated/0/Android/data/包名/files/)，便于用户直接访问日志
             jmethodID getExtFilesDirMid = env->GetMethodID(contextCls2, "getExternalFilesDir", "(Ljava/lang/String;)Ljava/io/File;");
             jobject extFilesDir = env->CallObjectMethod(context, getExtFilesDirMid, nullptr);
-            
-            // 外部目录不可用时，回退到内部私有目录 (需 Root 才能访问)
             if (!extFilesDir) {
                 env->ExceptionClear();
                 jmethodID getFilesDirMid = env->GetMethodID(contextCls2, "getFilesDir", "()Ljava/io/File;");
                 extFilesDir = env->CallObjectMethod(context, getFilesDirMid);
             }
-
             if (extFilesDir) {
                 jclass fileCls = env->GetObjectClass(extFilesDir);
                 jmethodID getAbsolutePathMid = env->GetMethodID(fileCls, "getAbsolutePath", "()Ljava/lang/String;");
@@ -556,9 +535,16 @@ static void* init_thread(void* arg) {
                 env->DeleteLocalRef(extFilesDir);
             }
             env->DeleteLocalRef(contextCls2);
-            
-            LogToFile("INIT", "Target Context acquired. Log path: " + g_logFilePath);
             LoadConfigToCache();
+            
+            if (g_config_cache.find("hide_elf=1") != std::string::npos) {
+                Tabs::g_hide_elf_header = true;
+                HideELFHeader();
+            }
+            if (g_config_cache.find("hide_soinfo=1") != std::string::npos) {
+                Tabs::g_hide_so_info = true;
+                HideMapsModule(); 
+            }
         }
 
         if (cacheDir.empty()) continue;
@@ -566,63 +552,33 @@ static void* init_thread(void* arg) {
         if (!configChecked) {
             configChecked = true;
             g_hide_injection_features = (g_config_cache.find("hide_injection=1") != std::string::npos);
-
             if (g_hide_injection_features) {
-                LogToFile("INIT", "Hide Injection enabled. Waiting for JsEngine...");
-                for (int i = 0; i < 50 && !g_js_ready.load(); i++) {
-                    usleep(100000);
-                }
-                
-                if (g_js_ready) {
-                    ExecuteJs(INJECTION_HIDE_JS, "防扫描模式");
-                    LogToFile("INIT", "INJECTION_HIDE_JS executed.");
-                } else {
-                    LogToFile("ERROR", "JsEngine not ready, injection aborted.");
-                }
+                for (int i = 0; i < 50 && !g_js_ready.load(); i++) usleep(100000);
+                if (g_js_ready) ExecuteJs(INJECTION_HIDE_JS, "自启动文件读取拦截");
             }
         }
 
-        LogToFile("INIT", "Start unpacking and loading DEX...");
         jobject loader = LoadDexLoader(env, cacheDir);
         if (!loader) continue;
-
         jclass rendererCls = LoadClassFromLoader(env, loader, targetCls);
-        
-        
         std::string dexPath = cacheDir + "/.tmp_mod.dex";
         unlink(dexPath.c_str());
+        if (!rendererCls) continue;
 
-        if (!rendererCls) { 
-            CheckJniException(env, "LoadClassFromLoader");
-            LogToFile("ERROR", "Failed to find class: " + std::string(targetCls));
-            continue; 
-        }
-
-        LogToFile("INIT", "Class loaded successfully. Registering native methods...");
         RegisterRendererNatives(env, rendererCls);
         KeyboardBridge::Init(env, rendererCls, g_vm);
 
         jmethodID getActivityMid = env->GetStaticMethodID(rendererCls, "getActivity", "()Landroid/app/Activity;");
         jobject activity = env->CallStaticObjectMethod(rendererCls, getActivityMid);
-        if (!activity) { 
-            CheckJniException(env, "getActivity");
-            LogToFile("ERROR", "Failed to get Activity via reflection.");
-            env->DeleteLocalRef(rendererCls);
-            continue; 
-        }
+        if (!activity) { env->DeleteLocalRef(rendererCls); continue; }
 
-        LogToFile("INIT", "Activity acquired. Mounting UI via createAndAttach...");
         jmethodID createAndAttachMid = env->GetStaticMethodID(rendererCls, "createAndAttach", "(Landroid/app/Activity;)V");
         env->CallStaticVoidMethod(rendererCls, createAndAttachMid, activity);
-        
-        CheckJniException(env, "createAndAttach");
-        LogToFile("INIT", "Mount process completed. UI should be active now.");
         
         env->DeleteLocalRef(activity);
         env->DeleteLocalRef(rendererCls);
         break;
     }
-
     g_vm->DetachCurrentThread();
     return nullptr;
 }
