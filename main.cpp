@@ -30,7 +30,6 @@ extern "C" {
 #include "frida-gumjs.h"
 }
 
-#include "script.h"
 #include "UI/UIManager.h"
 #include "UI/InputHandler.h"
 #include "UI/KeyboardBridge.h"
@@ -60,7 +59,6 @@ static std::string g_logFilePath = "";
 float g_fab_x = -1.0f;
 float g_fab_y = -1.0f;
 bool g_touch_penetration = false;
-bool g_hide_injection_features = false;
 
 struct ActiveScript {
     int id;
@@ -421,21 +419,61 @@ jobject get_context(JNIEnv* env) {
 }
 
 jobject LoadDexLoader(JNIEnv* env, const std::string& cacheDir) {
-    std::string dexPath = cacheDir + "/.tmp_mod.dex";
+    LogToFile("INIT", "LoadDexLoader: Start");
+    jobject parentLoader = nullptr;
+    
+    jclass activityThreadCls = env->FindClass("android/app/ActivityThread");
+    if (activityThreadCls) {
+        jmethodID currentApplicationMid = env->GetStaticMethodID(activityThreadCls, "currentApplication", "()Landroid/app/Application;");
+        if (currentApplicationMid) {
+            jobject app = env->CallStaticObjectMethod(activityThreadCls, currentApplicationMid);
+            if (app) {
+                jclass contextCls = env->GetObjectClass(app);
+                jmethodID getClassLoaderMid = env->GetMethodID(contextCls, "getClassLoader", "()Ljava/lang/ClassLoader;");
+                parentLoader = env->CallObjectMethod(app, getClassLoaderMid);
+                env->DeleteLocalRef(contextCls);
+                env->DeleteLocalRef(app);
+            }
+        }
+        env->DeleteLocalRef(activityThreadCls);
+    }
+
+    if (!parentLoader) {
+        jclass threadCls = env->FindClass("java/lang/Thread");
+        jmethodID curThreadMid = env->GetStaticMethodID(threadCls, "currentThread", "()Ljava/lang/Thread;");
+        jobject thread = env->CallStaticObjectMethod(threadCls, curThreadMid);
+        jmethodID getLoaderMid = env->GetMethodID(threadCls, "getContextClassLoader", "()Ljava/lang/ClassLoader;");
+        parentLoader = env->CallObjectMethod(thread, getLoaderMid);
+        env->DeleteLocalRef(thread);
+        env->DeleteLocalRef(threadCls);
+    }
+    
+    if (env->ExceptionCheck() || !parentLoader) {
+        env->ExceptionClear();
+        LogToFile("ERROR", "LoadDexLoader: Failed to get parentLoader");
+        return nullptr;
+    }
+    LogToFile("INIT", "LoadDexLoader: Got parentLoader");
+
+    size_t dex_size = dex_data_end - dex_data_start;
+    LogToFile("INIT", "LoadDexLoader: Dex Size = " + std::to_string(dex_size));
+
+    std::string dexPath = cacheDir + "/classes.dex";
     std::string optDir = cacheDir + "/oat";
+    
     remove(dexPath.c_str());
+
     FILE* fp = fopen(dexPath.c_str(), "wb");
-    if (!fp) return nullptr;
-    fwrite(dex_data_start, 1, dex_data_end - dex_data_start, fp);
+    if (!fp) {
+        LogToFile("ERROR", "LoadDexLoader: fopen dexPath failed.");
+        return nullptr;
+    }
+    fwrite(dex_data_start, 1, dex_size, fp);
     fclose(fp);
+
     chmod(dexPath.c_str(), 0444);
     mkdir(optDir.c_str(), 0777);
-
-    jclass threadCls = env->FindClass("java/lang/Thread");
-    jmethodID curThreadMid = env->GetStaticMethodID(threadCls, "currentThread", "()Ljava/lang/Thread;");
-    jobject thread = env->CallStaticObjectMethod(threadCls, curThreadMid);
-    jmethodID getLoaderMid = env->GetMethodID(threadCls, "getContextClassLoader", "()Ljava/lang/ClassLoader;");
-    jobject parentLoader = env->CallObjectMethod(thread, getLoaderMid);
+    LogToFile("INIT", "LoadDexLoader: DEX written as classes.dex");
 
     jclass loaderCls = env->FindClass("dalvik/system/DexClassLoader");
     jmethodID ctor = env->GetMethodID(loaderCls, "<init>", "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/ClassLoader;)V");
@@ -445,7 +483,16 @@ jobject LoadDexLoader(JNIEnv* env, const std::string& cacheDir) {
     jobject loader = env->NewObject(loaderCls, ctor, jDexPath, jOptPath, nullptr, parentLoader);
     env->DeleteLocalRef(jDexPath);
     env->DeleteLocalRef(jOptPath);
-    return env->ExceptionCheck() ? nullptr : loader;
+    env->DeleteLocalRef(loaderCls);
+
+    if (env->ExceptionCheck() || !loader) {
+        CheckJniException(env, "LoadDexLoader Construct");
+        LogToFile("ERROR", "LoadDexLoader: DexClassLoader failed");
+        return nullptr;
+    }
+
+    LogToFile("INIT", "LoadDexLoader: Success (No unlink, safe)");
+    return loader;
 }
 
 jclass LoadClassFromLoader(JNIEnv* env, jobject loader, const char* className) {
@@ -482,10 +529,24 @@ void RegisterRendererNatives(JNIEnv* env, jclass rendererCls) {
     env->RegisterNatives(rendererCls, methods, 6);
 }
 
+void DelayHideTask() {
+    sleep(3);
+    LogToFile("INIT", "DelayHideTask: Start");
+    if (Tabs::g_hide_so_info) {
+        HideMapsModule(); 
+        LogToFile("INIT", "DelayHideTask: HideMapsModule finished");
+    }
+    if (Tabs::g_hide_elf_header) {
+        HideELFHeader();
+        LogToFile("INIT", "DelayHideTask: HideELFHeader finished");
+    }
+    LogToFile("INIT", "DelayHideTask: Done");
+}
+
 static void* init_thread(void* arg) {
     JNIEnv* env = nullptr;
     g_vm->AttachCurrentThread(&env, nullptr);
-
+    
     InitJsEngine();
 
     const char* targetCls = "com.example.application3.MyRenderer";
@@ -536,49 +597,53 @@ static void* init_thread(void* arg) {
             }
             env->DeleteLocalRef(contextCls2);
             LoadConfigToCache();
-            
-            if (g_config_cache.find("hide_elf=1") != std::string::npos) {
-                Tabs::g_hide_elf_header = true;
-                HideELFHeader();
-            }
-            if (g_config_cache.find("hide_soinfo=1") != std::string::npos) {
-                Tabs::g_hide_so_info = true;
-                HideMapsModule(); 
-            }
+            LogToFile("INIT", "init_thread: Context initialized");
         }
 
         if (cacheDir.empty()) continue;
 
-        if (!configChecked) {
-            configChecked = true;
-            g_hide_injection_features = (g_config_cache.find("hide_injection=1") != std::string::npos);
-            if (g_hide_injection_features) {
-                for (int i = 0; i < 50 && !g_js_ready.load(); i++) usleep(100000);
-                if (g_js_ready) ExecuteJs(INJECTION_HIDE_JS, "自启动文件读取拦截");
-            }
-        }
-
         jobject loader = LoadDexLoader(env, cacheDir);
-        if (!loader) continue;
+        if (!loader) {
+            LogToFile("ERROR", "init_thread: loader is null");
+            continue;
+        }
+        
         jclass rendererCls = LoadClassFromLoader(env, loader, targetCls);
-        std::string dexPath = cacheDir + "/.tmp_mod.dex";
-        unlink(dexPath.c_str());
-        if (!rendererCls) continue;
+        if (!rendererCls) {
+            CheckJniException(env, "LoadClassFromLoader");
+            LogToFile("ERROR", "init_thread: rendererCls is null");
+            continue;
+        }
+        LogToFile("INIT", "init_thread: rendererCls found");
 
         RegisterRendererNatives(env, rendererCls);
         KeyboardBridge::Init(env, rendererCls, g_vm);
 
         jmethodID getActivityMid = env->GetStaticMethodID(rendererCls, "getActivity", "()Landroid/app/Activity;");
         jobject activity = env->CallStaticObjectMethod(rendererCls, getActivityMid);
-        if (!activity) { env->DeleteLocalRef(rendererCls); continue; }
+        if (!activity) { 
+            LogToFile("ERROR", "init_thread: activity is null");
+            env->DeleteLocalRef(rendererCls); 
+            continue; 
+        }
 
         jmethodID createAndAttachMid = env->GetStaticMethodID(rendererCls, "createAndAttach", "(Landroid/app/Activity;)V");
         env->CallStaticVoidMethod(rendererCls, createAndAttachMid, activity);
+        LogToFile("INIT", "init_thread: UI Attached");
         
         env->DeleteLocalRef(activity);
         env->DeleteLocalRef(rendererCls);
+
+        if (g_config_cache.find("hide_elf=1") != std::string::npos) Tabs::g_hide_elf_header = true;
+        if (g_config_cache.find("hide_soinfo=0") != std::string::npos) Tabs::g_hide_so_info = false;
+        
+        if (Tabs::g_hide_elf_header || Tabs::g_hide_so_info) {
+            std::thread(DelayHideTask).detach();
+        }
+
         break;
     }
+    LogToFile("INIT", "init_thread: End");
     g_vm->DetachCurrentThread();
     return nullptr;
 }

@@ -16,7 +16,6 @@ set_target_properties(frida-gumjs PROPERTIES
 
 set(SOURCES
     main.cpp
-    script.cpp
     presets.cpp
     assets/dex_data.S
     UI/UIManager.cpp
